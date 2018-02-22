@@ -20,34 +20,14 @@
  *
  * == Comments ==
  * Implementation:
+ * - Length of array is padded to the nearest power of 2 and the array is padded with 0s to that length.
  *
  * Performance:
  *
  */
 
-// Fix CUDA in CLion
-#ifdef __JETBRAINS_IDE__
-#define __CUDACC__ 1
-#define __host__
-#define __device__
-#define __global__
-#define __forceinline__
-#define __shared__
-
-inline void __syncthreads() {}
-
-inline void __threadfence_block() {}
-
-template<class T>
-inline T __clz(const T val) { return val; }
-
-struct __cuda_fake_struct {
-    int x;
-};
-#endif
-
-
 #include <stdio.h>
+#include <math.h>
 #include <time.h>
 
 // For the CUDA runtime routines (prefixed with "cuda_")
@@ -56,7 +36,7 @@ struct __cuda_fake_struct {
 #include <helper_functions.h>
 
 #define NUM_BANKS 32
-#define LOG_NUM_BANKS 4
+#define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) \
     ((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
 
@@ -69,7 +49,7 @@ void refScan(int *h_output, int *h_input, const int len) {
 }
 
 extern __shared__ int temp[]; // allocated on invocation
-__global__ void blockScan(int *d_Output, int *d_Input, const int len) {
+__global__ void blockScan(int *d_Output, int *d_Input, int len) {
     int thid = blockIdx.x * blockDim.x + threadIdx.x;
     int offset = 1;
 
@@ -109,7 +89,7 @@ __global__ void blockScan(int *d_Output, int *d_Input, const int len) {
     d_Output[2 * thid + 1] = temp[2 * thid + 1];
 }
 
-__global__ void blockScanNoConflict(int *d_Output, int *d_Input, const int len) {
+__global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
     int thid = blockIdx.x * blockDim.x + threadIdx.x;
     int offset = 1;
 
@@ -157,6 +137,18 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, const int len) 
     d_Output[bi] = temp[bi + bankOffsetB];
 }
 
+int withPadding(int len) {
+    len--;
+    len |= len >> 1;
+    len |= len >> 2;
+    len |= len >> 4;
+    len |= len >> 8;
+    len |= len >> 16;
+    len++;
+
+    return len;
+}
+
 void printTestEquals(int *value1, int *value2, int len) {
     bool equal = true;
     for (int i = 0; i < len; i++) {
@@ -178,8 +170,11 @@ int main() {
     int *h_Output_d;
     int *d_Input;
     int *d_Output;
-    const int len = 2048; // Number of elements in the input array.
+    int beforePadLen = 2048; // Number of elements in the input array.
     StopWatchInterface *timer = NULL;
+
+    // Pad the length to the nearest power of 2
+    int len = withPadding(beforePadLen);
 
     // Allocate host memory
     printf("Allocating host memory...\n");
@@ -195,6 +190,12 @@ int main() {
     srand((uint) (time(NULL)));
     for (int i = 0; i < len; i++) {
         h_Input[i] = 1; //rand() % 10;
+    }
+    printf("%d", len);
+    if (len - beforePadLen > 0) {
+        for (int i = beforePadLen - 1; i < len; i++) {
+            h_Input[i] = 0;
+        }
     }
 
     // Allocate device memory and copy input to device
@@ -221,7 +222,7 @@ int main() {
 
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
     printTestEquals(h_Output, h_Output_d, len);
-    printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), len);
+    printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), beforePadLen);
 
     // Run block scan no bank conflicts
     printf("\nGrid Size: %d, Block Size: %d\n", gridSize, blockSize);
@@ -232,8 +233,9 @@ int main() {
     sdkStopTimer(&timer);
 
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
+    printf("Block Scan Result:\n");
     printTestEquals(h_Output, h_Output_d, len);
-    printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), len);
+    printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), beforePadLen);
 
     // Clean up memory
     printf("Cleaning up memory...\n");
