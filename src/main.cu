@@ -66,7 +66,7 @@ void refScan(int *h_output, int *h_input, const int len) {
 
 extern __shared__ int temp[]; // allocated on invocation
 __global__ void blockScan(int *d_Output, int *d_Input, const int len) {
-    int thid = threadIdx.x;
+    int thid = blockIdx.x * blockDim.x + threadIdx.x;
     int offset = 1;
 
     if (2 * thid < len) {
@@ -121,7 +121,7 @@ void printTestEquals(int *value1, int *value2, int len) {
         }
     }
 
-    printf("Test: %s\n", equal ? "PASS" : "FAIL" );
+    printf("Test: %s\n", equal ? "PASS" : "FAIL");
 }
 
 int main() {
@@ -134,7 +134,7 @@ int main() {
     int *h_Output_d;
     int *d_Input;
     int *d_Output;
-    const int len = 512; // Number of elements in the input array.
+    const int len = 2048; // Number of elements in the input array.
 
     // Allocate host memory
     printf("Allocating host memory...\n");
@@ -158,11 +158,11 @@ int main() {
 
     // Set Grid and Block sizes
     checkCudaErrors(cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, blockScan, 0, 0));
-    gridSize = (len + blockSize - 1) / blockSize;
+    gridSize = (len + (blockSize * 2) - 1) / (blockSize * 2);
 
     // Run Single block scan
-    //printf("Grid: %d, Block %d\n", gridSize, blockSize);
-    blockScan << < 1, blockSize, 2 * blockSize >> > (d_Output, d_Input, len);
+    printf("Grid: %d, Block %d\n", gridSize, blockSize);
+    blockScan << < gridSize, blockSize, (2 * blockSize) * sizeof(int) >> > (d_Output, d_Input, len);
     checkCudaErrors(cudaDeviceSynchronize());
 
     refScan(h_Output, h_Input, len);
