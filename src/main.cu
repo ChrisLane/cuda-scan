@@ -48,6 +48,7 @@ void refScan(int *h_output, int *h_input, const int len) {
 }
 
 extern __shared__ int temp[]; // allocated on invocation
+
 __global__ void blockScan(int *d_Output, int *d_Input, int len) {
     int thid = blockIdx.x * blockDim.x + threadIdx.x;
     int local_thid = threadIdx.x;
@@ -107,6 +108,8 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
     int bi = local_thid + (blockDim.x);
     int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
     int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+    int outputAi = ai;
+    int outputBi = bi;
     if (thid < len) {
         temp[ai + bankOffsetA] = d_Input[thid];
         temp[bi + bankOffsetB] = d_Input[thid + blockDim.x];
@@ -140,6 +143,10 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
             bi = offset * (intPosInBlock + 2) - 1;
             ai += CONFLICT_FREE_OFFSET(ai);
             bi += CONFLICT_FREE_OFFSET(bi);
+            outputAi = offset * ((thid << 1) + 1) - 1;
+            outputBi = offset * ((thid << 1) + 2) - 1;
+            outputAi += CONFLICT_FREE_OFFSET(outputAi);
+            outputBi += CONFLICT_FREE_OFFSET(outputBi);
 
             int t = temp[ai];
             temp[ai] = temp[bi];
@@ -148,8 +155,132 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
     }
     __syncthreads();
 
-    d_Output[ai] = temp[ai + bankOffsetA];
-    d_Output[bi] = temp[bi + bankOffsetB];
+    d_Output[outputAi] = temp[ai + bankOffsetA];
+    d_Output[outputBi] = temp[bi + bankOffsetB];
+}
+
+__global__ void level1(int *d_Output, int *d_Input, int len, int *d_SumOutput) {
+    int thid = blockIdx.x * blockDim.x + threadIdx.x;
+    int local_thid = threadIdx.x;
+    int offset = 1;
+    int intsPerBlock = blockDim.x << 1;
+    int intPosInBlock = local_thid << 1;
+
+    int ai = local_thid;
+    int bi = local_thid + (blockDim.x);
+    int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+    int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+    int outputAi = ai;
+    int outputBi = bi;
+    if (thid < len) {
+        temp[ai + bankOffsetA] = d_Input[thid];
+        temp[bi + bankOffsetB] = d_Input[thid + blockDim.x];
+    } else {
+        temp[ai + bankOffsetA] = 0;
+        temp[bi + bankOffsetB] = 0;
+    }
+
+    for (int d = blockDim.x; d > 0; d >>= 1) { // build sum in place up the tree
+        __syncthreads();
+        if (local_thid < d) {
+            ai = offset * (intPosInBlock + 1) - 1;
+            bi = offset * (intPosInBlock + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            temp[bi] += temp[ai];
+        }
+        offset <<= 1;
+    }
+
+    if (local_thid == 0) {
+        d_SumOutput[blockIdx.x] = temp[intsPerBlock - 1 + CONFLICT_FREE_OFFSET(intsPerBlock - 1)];
+        temp[intsPerBlock - 1 + CONFLICT_FREE_OFFSET(intsPerBlock - 1)] = 0;
+    }
+
+    for (int d = 1; d < intsPerBlock; d <<= 1) { // traverse down tree & build scan
+        offset >>= 1;
+        __syncthreads();
+        if (local_thid < d) {
+            ai = offset * (intPosInBlock + 1) - 1;
+            bi = offset * (intPosInBlock + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+            outputAi = offset * ((thid << 1) + 1) - 1;
+            outputBi = offset * ((thid << 1) + 2) - 1;
+            outputAi += CONFLICT_FREE_OFFSET(outputAi);
+            outputBi += CONFLICT_FREE_OFFSET(outputBi);
+
+            int t = temp[ai];
+            temp[ai] = temp[bi];
+            temp[bi] += t;
+        }
+    }
+    __syncthreads();
+
+    d_Output[outputAi] = temp[ai + bankOffsetA];
+    d_Output[outputBi] = temp[bi + bankOffsetB];
+}
+
+__global__ void addToBlocks(int *d_Output, int *d_IncrOutput) {
+    int thid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    d_Output[thid] += d_IncrOutput[blockIdx.x];
+}
+
+void fullscan(int *d_Output, int *d_Input, int len, int blockSize) {
+    int gridSize = (len + (blockSize * 2) - 1) / (blockSize * 2);
+    int sharedMemSize = blockSize * 2;
+    int *d_SumsOutput;
+    int *d_IncrOutput;
+    int *h_SumsOutput_d;
+    int *h_IncrOutput_d;
+    int *h_Output_d;
+
+    h_Output_d = (int *) malloc(len * sizeof(int));
+    h_SumsOutput_d = (int *) malloc(gridSize * sizeof(int));
+    h_IncrOutput_d = (int *) malloc(gridSize * sizeof(int));
+    h_Output_d = (int *) malloc(len * sizeof(int));
+
+    checkCudaErrors(cudaMalloc((void **) &d_SumsOutput, gridSize * sizeof(int)));
+    checkCudaErrors(cudaMalloc((void **) &d_IncrOutput, gridSize * sizeof(int)));
+
+    level1 << < gridSize, blockSize, sharedMemSize >> > (d_Output, d_Input, len, d_SumsOutput);
+    checkCudaErrors(cudaDeviceSynchronize());
+    checkCudaErrors(cudaMemcpy(h_SumsOutput_d, d_SumsOutput, gridSize * sizeof(int), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
+
+    printf("Block Scan Result:\n");
+    for (int i = 0; i < len; i++) {
+        printf("%d ", h_Output_d[i]);
+    }
+    printf("\n");
+
+    printf("SUM Array:\n");
+    for (int i = 0; i < gridSize; i++) {
+        printf("%d ", h_SumsOutput_d[i]);
+    }
+    printf("\n");
+
+    blockScanNoConflict << < gridSize, blockSize * 2, sharedMemSize >> >
+                                                      (d_IncrOutput, d_SumsOutput, gridSize * sizeof(int));
+    checkCudaErrors(cudaDeviceSynchronize());
+    checkCudaErrors(cudaMemcpy(h_IncrOutput_d, d_IncrOutput, gridSize * sizeof(int), cudaMemcpyDeviceToHost));
+    printf("INCR Scan Result:\n");
+    for (int i = 0; i < gridSize; i++) {
+        printf("%d ", h_IncrOutput_d[i]);
+    }
+    printf("\n");
+
+    printf("Grid: %d, Block %d\n", gridSize, blockSize);
+    addToBlocks << < gridSize, blockSize * 2, sharedMemSize >> > (d_Output, d_IncrOutput);
+    checkCudaErrors(cudaDeviceSynchronize());
+    checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
+    printf("Add to Blocks Result:\n");
+    for (int i = 0; i < len; i++) {
+        printf("%d ", h_Output_d[i]);
+    }
+    printf("\n");
 }
 
 void printTestEquals(int *value1, int *value2, int len) {
@@ -175,8 +306,8 @@ void printTestBlockEquals(int *complete, int *blockOnly, int len, int blockSize)
 }
 
 int main() {
-    int len = 10000000; // Number of elements in the input array.
-    int blockSize = 128;
+    int len = 32; // Number of elements in the input array.
+    int blockSize = 2;
     int gridSize = (len + (blockSize * 2) - 1) / (blockSize * 2);
     int sharedMemSize = 2 * blockSize * sizeof(int);
     int testCount = 5;
@@ -214,18 +345,31 @@ int main() {
     printf("Copying input to device...\n");
     checkCudaErrors(cudaMemcpy(d_Input, h_Input, len * sizeof(int), cudaMemcpyHostToDevice));
 
-    // Run reference scan
+
+    /**
+     * Reference Scan
+     */
     refScan(h_Output, h_Input, len);
 
-    // Run Single block scan
+
+    /**
+     * Test Naive Block Scan
+     */
+
+    // Start timers
     sdkResetTimer(&timer);
     sdkStartTimer(&timer);
+
+    // Run kernel
     for (int i = 0; i < testCount; i++) {
         blockScan << < gridSize, blockSize, sharedMemSize >> > (d_Output, d_Input, len);
     }
     checkCudaErrors(cudaDeviceSynchronize());
+
+    // Stop timer
     sdkStopTimer(&timer);
 
+    // Print results
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
     printf("\nBlock Scan Result:\n");
     printf("Grid Size: %d, Block Size: %d\n", gridSize, blockSize);
@@ -234,21 +378,43 @@ int main() {
     timerResult = 1.0e-3 * sdkGetTimerValue(&timer) / testCount;
     printf("Time taken: %.5f s, Number of Elements: %d\n\n", timerResult, len);
 
-    // Run block scan no bank conflicts
+
+    /**
+     * Test Block Scan with Bank Collision Avoidance Optimisation
+     */
+
+    // Reset memory
+    h_Output_d = (int *) memset(h_Output_d, 0, len * sizeof(int));
+    checkCudaErrors(cudaMemset(d_Output, 0, len * sizeof(int)));
+
+    // Start timers
     sdkResetTimer(&timer);
     sdkStartTimer(&timer);
+
+    // Run kernel
     for (int i = 0; i < testCount; i++) {
         blockScanNoConflict << < gridSize, blockSize, sharedMemSize >> > (d_Output, d_Input, len);
     }
     checkCudaErrors(cudaDeviceSynchronize());
+
+    // Stop timer
     sdkStopTimer(&timer);
 
+    // Print results
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
     printf("\nBlock Scan With BCAO Result:\n");
     printf("Grid Size: %d, Block Size: %d\n", gridSize, blockSize);
     printTestBlockEquals(h_Output, h_Output_d, len, blockSize);
     timerResult = 1.0e-3 * sdkGetTimerValue(&timer) / testCount;
     printf("Time taken: %.5f s, Number of Elements: %d\n\n", timerResult, len);
+
+
+    /**
+     * Test Full Scan
+     */
+    h_Output_d = (int *) memset(h_Output_d, 0, len * sizeof(int));
+    checkCudaErrors(cudaMemset(d_Output, 0, len * sizeof(int)));
+    fullscan(d_Output, d_Input, len, blockSize);
 
     // Clean up memory
     printf("Cleaning up memory...\n");
