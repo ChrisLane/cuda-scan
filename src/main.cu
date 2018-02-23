@@ -62,27 +62,27 @@ __global__ void blockScan(int *d_Output, int *d_Input, int len) {
         temp[2 * local_thid + 1] = 0;
     }
 
-    for (int d = len / 2; d > 0; d /= 2) { // build sum in place up the tree
+    for (int d = blockDim.x; d > 0; d /= 2) { // build sum in place up the tree
         __syncthreads();
-        if (thid < d) {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
+        if (local_thid < d) {
+            int ai = offset * (2 * local_thid + 1) - 1;
+            int bi = offset * (2 * local_thid + 2) - 1;
 
             temp[bi] += temp[ai];
         }
         offset *= 2;
     }
 
-    if (thid == 0) {
-        temp[len - 1] = 0; // clear the last element
+    if (local_thid == 0) {
+        temp[(blockDim.x * 2) - 1] = 0; // clear the last element
     }
 
-    for (int d = 1; d < len; d *= 2) { // traverse down tree & build scan
+    for (int d = 1; d < blockDim.x * 2; d *= 2) { // traverse down tree & build scan
         offset /= 2;
         __syncthreads();
-        if (thid < d) {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
+        if (local_thid < d) {
+            int ai = offset * (2 * local_thid + 1) - 1;
+            int bi = offset * (2 * local_thid + 2) - 1;
 
             int t = temp[ai];
             temp[ai] = temp[bi];
@@ -91,8 +91,8 @@ __global__ void blockScan(int *d_Output, int *d_Input, int len) {
     }
     __syncthreads();
 
-    d_Output[2 * thid] = temp[2 * thid]; // write results to device memory
-    d_Output[2 * thid + 1] = temp[2 * thid + 1];
+    d_Output[2 * thid] = temp[2 * local_thid]; // write results to device memory
+    d_Output[2 * thid + 1] = temp[2 * local_thid + 1];
 }
 
 __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
@@ -112,11 +112,11 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
         temp[bi + bankOffsetB] = 0;
     }
 
-    for (int d = len / 2; d > 0; d /= 2) { // build sum in place up the tree
+    for (int d = blockDim.x; d > 0; d /= 2) { // build sum in place up the tree
         __syncthreads();
-        if (thid < d) {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
+        if (local_thid < d) {
+            int ai = offset * (2 * local_thid + 1) - 1;
+            int bi = offset * (2 * local_thid + 2) - 1;
             ai += CONFLICT_FREE_OFFSET(ai);
             bi += CONFLICT_FREE_OFFSET(bi);
 
@@ -125,16 +125,16 @@ __global__ void blockScanNoConflict(int *d_Output, int *d_Input, int len) {
         offset *= 2;
     }
 
-    if (thid == 0) {
-        temp[len - 1 + CONFLICT_FREE_OFFSET(len - 1)] = 0;
+    if (local_thid == 0) {
+        temp[(blockDim.x * 2) - 1 + CONFLICT_FREE_OFFSET((blockDim.x * 2) - 1)] = 0;
     }
 
-    for (int d = 1; d < len; d *= 2) { // traverse down tree & build scan
+    for (int d = 1; d < blockDim.x * 2; d *= 2) { // traverse down tree & build scan
         offset /= 2;
         __syncthreads();
-        if (thid < d) {
-            int ai = offset * (2 * thid + 1) - 1;
-            int bi = offset * (2 * thid + 2) - 1;
+        if (local_thid < d) {
+            int ai = offset * (2 * local_thid + 1) - 1;
+            int bi = offset * (2 * local_thid + 2) - 1;
             ai += CONFLICT_FREE_OFFSET(ai);
             bi += CONFLICT_FREE_OFFSET(bi);
 
@@ -160,6 +160,17 @@ void printTestEquals(int *value1, int *value2, int len) {
     printf("Test: %s\n", equal ? "PASS" : "FAIL");
 }
 
+void printTestBlockEquals(int *complete, int *blockOnly, int len, int blockSize) {
+    bool equal = true;
+    for (int i = 0; i < len; i++) {
+        if (complete[i % (blockSize * 2)] != blockOnly[i]) {
+            equal = false;
+        }
+    }
+
+    printf("Test: %s\n", equal ? "PASS" : "FAIL");
+}
+
 int main() {
     int blockSize;
     int minGridSize;
@@ -170,7 +181,7 @@ int main() {
     int *h_Output_d;
     int *d_Input;
     int *d_Output;
-    int len = 2048; // Number of elements in the input array.
+    int len = 10000000; // Number of elements in the input array.
     StopWatchInterface *timer = NULL;
 
 
@@ -214,7 +225,8 @@ int main() {
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
     printf("\nBlock Scan Result:\n");
     printf("Grid Size: %d, Block Size: %d\n", gridSize, blockSize);
-    printTestEquals(h_Output, h_Output_d, len);
+    printf("Block Scan Result:\n");
+    printTestBlockEquals(h_Output, h_Output_d, len, blockSize);
     printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), len);
 
     // Run block scan no bank conflicts
@@ -227,7 +239,7 @@ int main() {
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
     printf("\nBlock Scan With BCAO Result:\n");
     printf("Grid Size: %d, Block Size: %d\n", gridSize, blockSize);
-    printTestEquals(h_Output, h_Output_d, len);
+    printTestBlockEquals(h_Output, h_Output_d, len, blockSize);
     printf("Time taken: %.5f, Number of Elements: %d\n\n", sdkGetTimerValue(&timer), len);
 
     // Clean up memory
