@@ -10,9 +10,9 @@
  *
  * == Times ==
  ∗ Block scan w/o BCAO: 2.039ms
- ∗ Block scan w/ BCAO:  1.947ms
- ∗ Full scan w/o BCAO:  27.864ms
- ∗ Full scan w/ BCAO:   27.538ms
+ ∗ Block scan w/ BCAO:  1.829ms
+ ∗ Full scan w/o BCAO:  3.024ms
+ ∗ Full scan w/ BCAO:   2.820ms
  *
  * == Hardware ==
  * CPU: i5-6500
@@ -172,8 +172,37 @@ __global__ void addToBlocks(int *d_Output, int *d_Addition, int len) {
     }
 }
 
-void fullscan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_Sums2Output,
-              int *d_Sums1Scanned, int *d_Sums2Scanned) {
+void twoLayer(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_Sums1Scanned) {
+    int gridSize = (len + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
+    int level2Grid = (gridSize + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
+    int sharedMemSize = 4 * BLOCK_SIZE * sizeof(int);
+
+    int sums1Len = gridSize;
+
+    int *h_Output_d = (int *) malloc(len * sizeof(int));
+    int *h_SumsOutput_d = (int *) malloc(gridSize * sizeof(int));
+
+    // Run level 1 block scan (Block Scan & Extract Sum1)
+#if NO_CONFLICT
+    prescanNoConflict <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, d_Sums1Output);
+#else
+    prescan <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, d_Sums1Output);
+#endif
+
+
+    // Run a block scan on the sum outputs (Block Scan Sum1 & Extract Sum2)
+#if NO_CONFLICT
+    prescanNoConflict <<< level2Grid, BLOCK_SIZE, sharedMemSize >>> (d_Sums1Scanned, d_Sums1Output, sums1Len, NULL);
+#else
+    prescan <<< level2Grid, BLOCK_SIZE, sharedMemSize >>> (d_Sums1Scanned, d_Sums1Output, sums1Len, NULL);
+#endif
+
+    // Add the sums to the original block inputs
+    addToBlocks <<< gridSize, BLOCK_SIZE * 2, sharedMemSize >>> (d_Output, d_Sums1Scanned, len);
+}
+
+void threeLayer(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_Sums2Output,
+                int *d_Sums1Scanned, int *d_Sums2Scanned) {
     int gridSize = (len + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
     int level2Grid = (gridSize + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
     int level3Grid = (level2Grid + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
@@ -189,7 +218,7 @@ void fullscan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_S
 #if NO_CONFLICT
     prescanNoConflict <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, d_Sums1Output);
 #else
-    prescan <<< gridSize, blockSize, sharedMemSize >>> (d_Output, d_Input, len, d_Sums1Output);
+    prescan <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, d_Sums1Output);
 #endif
 
 
@@ -198,7 +227,7 @@ void fullscan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_S
     prescanNoConflict <<< level2Grid, BLOCK_SIZE, sharedMemSize >>>
                                                 (d_Sums1Scanned, d_Sums1Output, sums1Len, d_Sums2Output);
 #else
-    prescan <<< level2Grid, blockSize, sharedMemSize >>> (d_Sums1Scanned, d_Sums1Output, sums1Len, d_Sums2Output);
+    prescan <<< level2Grid, BLOCK_SIZE, sharedMemSize >>> (d_Sums1Scanned, d_Sums1Output, sums1Len, d_Sums2Output);
 #endif
 
 
@@ -206,7 +235,7 @@ void fullscan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_S
 #if NO_CONFLICT
     prescanNoConflict <<< level3Grid, BLOCK_SIZE, sharedMemSize >>> (d_Sums2Scanned, d_Sums2Output, sums2Len, NULL);
 #else
-    prescan <<< level3Grid, blockSize, sharedMemSize >>> (d_Sums2Scanned, d_Sums2Output, sums2Len, NULL);
+    prescan <<< level3Grid, BLOCK_SIZE, sharedMemSize >>> (d_Sums2Scanned, d_Sums2Output, sums2Len, NULL);
 #endif
 
     // Add the sums to the original block inputs
@@ -214,7 +243,26 @@ void fullscan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_S
 
     // Add the sums to the original block inputs
     addToBlocks <<< gridSize, BLOCK_SIZE * 2, sharedMemSize >>> (d_Output, d_Sums1Scanned, len);
-    checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
+}
+
+void scan(int *d_Output, int *d_Input, int len, int *d_Sums1Output, int *d_Sums2Output,
+          int *d_Sums1Scanned, int *d_Sums2Scanned) {
+    int gridSize = (len + (BLOCK_SIZE * 2) - 1) / (BLOCK_SIZE * 2);
+    int sharedMemSize = 4 * BLOCK_SIZE * sizeof(int);
+
+    if (len <= BLOCK_SIZE * 2) {
+#if NO_CONFLICT
+        prescanNoConflict <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, NULL);
+#else
+        prescan <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, NULL);
+#endif
+    } else if (len <= pow((BLOCK_SIZE * 2), 2)) {
+        twoLayer(d_Output, d_Input, len, d_Sums1Output, d_Sums1Scanned);
+    } else if (len <= pow((BLOCK_SIZE * 2),3)) {
+        threeLayer(d_Output, d_Input, len, d_Sums1Output, d_Sums2Output, d_Sums1Scanned, d_Sums2Scanned);
+    } else {
+        printf("Array length not within program's abilities.\n");
+    }
 }
 
 void printTestEquals(int *value1, int *value2, int len) {
@@ -276,7 +324,7 @@ int main() {
     printf("Generating random input...\n");
     srand((uint) (time(NULL)));
     for (int i = 0; i < len; i++) {
-        h_Input[i] = 1; //rand() % 10;
+        h_Input[i] = rand() % 10;
     }
 
     // Allocate device memory and copy input to device
@@ -288,19 +336,20 @@ int main() {
     checkCudaErrors(cudaMalloc(&d_Sums1Scanned, gridSize * sizeof(int)));
     checkCudaErrors(cudaMalloc(&d_Sums2Scanned, gridSize * sizeof(int)));
 
-    printf("Copying input to device...\n");
-    checkCudaErrors(cudaMemcpy(d_Input, h_Input, len * sizeof(int), cudaMemcpyHostToDevice));
-
-
-    /**
-     * Reference Scan
-     */
-    refScan(h_Output, h_Input, len);
-
 
     /**
      * Test Block Scan
      */
+
+    // Generate static input
+    for (int i = 0; i < len; i++) {
+        h_Input[i] = 1;
+    }
+    printf("Copying input to device...\n");
+    checkCudaErrors(cudaMemcpy(d_Input, h_Input, len * sizeof(int), cudaMemcpyHostToDevice));
+
+    // Run reference scan
+    refScan(h_Output, h_Input, len);
 
     // Reset memory
     h_Output_d = (int *) memset(h_Output_d, 0, len * sizeof(int));
@@ -315,7 +364,7 @@ int main() {
 #if NO_CONFLICT
         prescanNoConflict <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, NULL);
 #else
-        prescan <<< gridSize, blockSize, sharedMemSize >>> (d_Output, d_Input, len, NULL);
+        prescan <<< gridSize, BLOCK_SIZE, sharedMemSize >>> (d_Output, d_Input, len, NULL);
 #endif
     }
     checkCudaErrors(cudaDeviceSynchronize());
@@ -336,6 +385,17 @@ int main() {
      * Test Full Scan
      */
 
+    // Generate random input
+    srand((uint) (time(NULL)));
+    for (int i = 0; i < len; i++) {
+        h_Input[i] = rand() % 10;
+    }
+    printf("Copying input to device...\n");
+    checkCudaErrors(cudaMemcpy(d_Input, h_Input, len * sizeof(int), cudaMemcpyHostToDevice));
+
+    // Run reference scan
+    refScan(h_Output, h_Input, len);
+
     // Reset memory
     h_Output_d = (int *) memset(h_Output_d, 0, len * sizeof(int));
     checkCudaErrors(cudaMemset(d_Output, 0, len * sizeof(int)));
@@ -346,7 +406,7 @@ int main() {
 
     // Run full scan
     for (int i = 0; i < testCount; i++) {
-        fullscan(d_Output, d_Input, len, d_Sums1Output, d_Sums2Output, d_Sums1Scanned, d_Sums2Scanned);
+        scan(d_Output, d_Input, len, d_Sums1Output, d_Sums2Output, d_Sums1Scanned, d_Sums2Scanned);
     }
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -355,7 +415,7 @@ int main() {
 
     // Print results
     checkCudaErrors(cudaMemcpy(h_Output_d, d_Output, len * sizeof(int), cudaMemcpyDeviceToHost));
-    printf("\nFull Scan Result:\n");
+    printf("\nGPU Scan Result:\n");
     printTestEquals(h_Output, h_Output_d, len);
     timerResult = sdkGetTimerValue(&timer) / testCount;
     printf("Time taken: %.5f ms, Number of Elements: %d\n\n", timerResult, len);
@@ -363,7 +423,12 @@ int main() {
     // Clean up memory
     printf("Cleaning up memory...\n");
     free(h_Input);
+    free(h_Output);
     free(h_Output_d);
     checkCudaErrors(cudaFree(d_Output));
     checkCudaErrors(cudaFree(d_Input));
+    checkCudaErrors(cudaFree(d_Sums1Output));
+    checkCudaErrors(cudaFree(d_Sums2Output));
+    checkCudaErrors(cudaFree(d_Sums1Scanned));
+    checkCudaErrors(cudaFree(d_Sums2Scanned));
 }
