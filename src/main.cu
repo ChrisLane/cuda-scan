@@ -43,7 +43,7 @@
 #define NUM_BANKS 32
 #define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) \
-    ((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
+    (((n) >> LOG_NUM_BANKS) + ((n) >> (2 * LOG_NUM_BANKS)))
 #define NO_CONFLICT true
 
 void refScan(int *h_output, int *h_input, const int len) {
@@ -190,7 +190,7 @@ __global__ void addToBlocks(int *d_Output, int *d_Addition, int len) {
 void fullscan(int *d_Output, int *d_Input, int len, int blockSize, int *d_Sums1Output, int *d_Sums2Output,
               int *d_Sums1Scanned, int *d_Sums2Scanned) {
     int gridSize = (len + (blockSize * 2) - 1) / (blockSize * 2);
-    int sharedMemSize = blockSize * 2 * sizeof(int);
+    int sharedMemSize = 4 * blockSize * sizeof(int);
 
     int *h_Output_d = (int *) malloc(len * sizeof(int));
     int *h_SumsOutput_d = (int *) malloc(gridSize * sizeof(int));
@@ -265,7 +265,7 @@ int main() {
     int len = 10000000; // Number of elements in the input array.
     int blockSize = 128;
     int gridSize = (len + (blockSize * 2) - 1) / (blockSize * 2);
-    int sharedMemSize = 2 * blockSize * sizeof(int);
+    int sharedMemSize = 4 * blockSize * sizeof(int);
     int testCount = 5;
 
     double timerResult;
