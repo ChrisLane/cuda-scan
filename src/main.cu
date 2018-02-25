@@ -20,14 +20,16 @@
  *
  * == Comments ==
  * Implementation:
+ * - Block scans use block ID and dimensions rather than array length in order to work with multiple blocks.
  * - Thread results are set to 0 if longer than the array length since the threads will run anyway.
  *   This means that we don't have to pad the input.
  * - Code on the GPU Gems page was wrong in many places. Fixed the code to use blockDim.x in place of len /2 etc.
  *   to make the code work with many grid and block sizes.
+ * - Single level block scans are tested against a known array of 1s requiring more than one block.
  *
  * Performance:
  * - Bitshifting where possible, this would probably be done by the compiler anyway.
- * - CUDA code is compiled with the -O3 flag
+ * - CUDA code is compiled with various optimisation flags
  * - Implemented bank conflict avoidance optimisation
  * - A block size of 128 gave the fastest results
  *
