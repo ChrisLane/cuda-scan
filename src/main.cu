@@ -300,12 +300,12 @@ int main() {
 
     // Allocate device memory and copy input to device
     printf("Allocating device memory...\n");
-    checkCudaErrors(cudaMalloc((void **) &d_Input, len * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **) &d_Output, len * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **) &d_Sums1Output, gridSize * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **) &d_Sums2Output, gridSize * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **) &d_Sums1Scanned, gridSize * sizeof(int)));
-    checkCudaErrors(cudaMalloc((void **) &d_Sums2Scanned, gridSize * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Input, len * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Output, len * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Sums1Output, gridSize * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Sums2Output, gridSize * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Sums1Scanned, gridSize * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&d_Sums2Scanned, gridSize * sizeof(int)));
 
     printf("Copying input to device...\n");
     checkCudaErrors(cudaMemcpy(d_Input, h_Input, len * sizeof(int), cudaMemcpyHostToDevice));
