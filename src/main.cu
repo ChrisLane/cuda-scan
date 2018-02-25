@@ -9,10 +9,10 @@
  * BCAO: Achieved
  *
  * == Times ==
- ∗ Block scan w/o BCAO: 2.038ms
- ∗ Block scan w/ BCAO:  1.975ms
- ∗ Full scan w/o BCAO:  27.894ms
- ∗ Full scan w/ BCAO:   28.300ms
+ ∗ Block scan w/o BCAO: 2.039ms
+ ∗ Block scan w/ BCAO:  1.947ms
+ ∗ Full scan w/o BCAO:  27.864ms
+ ∗ Full scan w/ BCAO:   27.538ms
  *
  * == Hardware ==
  * CPU: i5-6500
