@@ -42,7 +42,6 @@
 #include <helper_cuda.h>
 #include <helper_functions.h>
 
-#define NUM_BANKS 32
 #define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) \
     (((n) >> LOG_NUM_BANKS) + ((n) >> (2 * LOG_NUM_BANKS)))
