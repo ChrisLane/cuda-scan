@@ -9,10 +9,10 @@
  * BCAO: Achieved
  *
  * == Times ==
- ∗ Block scan w/o BCAO: 2.039ms
- ∗ Block scan w/ BCAO:  1.829ms
- ∗ Full scan w/o BCAO:  3.024ms
- ∗ Full scan w/ BCAO:   2.820ms
+ ∗ Block scan w/o BCAO: 1.977ms
+ ∗ Block scan w/ BCAO:  1.274ms
+ ∗ Full scan w/o BCAO:  2.958ms
+ ∗ Full scan w/ BCAO:   2.257ms
  *
  * == Hardware ==
  * CPU: i5-6500
@@ -23,7 +23,7 @@
  * - Block scans use block ID and dimensions rather than array length in order to work with multiple blocks.
  * - Thread results are set to 0 if longer than the array length since the threads will run anyway.
  *   This means that we don't have to pad the input.
- * - Code on the GPU Gems page was wrong in many places. Fixed the code to use blockDim.x in place of len /2 etc.
+ * - Code on the GPU Gems page was wrong in many places. Fixed the code to use BLOCK_SIZE in place of len /2 etc.
  *   to make the code work with many grid and block sizes.
  * - Single level block scans are tested against a known array of 1s requiring more than one block.
  *
@@ -32,6 +32,7 @@
  * - CUDA code is compiled with various optimisation flags
  * - Implemented bank conflict avoidance optimisation
  * - A block size of 128 gave the fastest results
+ * - Using constant BLOCK_SIZE definition to allow for loop unrolling
  *
  */
 
@@ -45,7 +46,7 @@
 #define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) \
     (((n) >> LOG_NUM_BANKS) + ((n) >> (2 * LOG_NUM_BANKS)))
-#define NO_CONFLICT true
+#define NO_CONFLICT false
 #define BLOCK_SIZE 128
 
 void refScan(int *h_output, int *h_input, const int len) {
@@ -59,17 +60,17 @@ void refScan(int *h_output, int *h_input, const int len) {
 extern __shared__ int temp[]; // allocated on invocation
 
 __global__ void prescan(int *d_Output, int *d_Input, int len, int *d_SumOutput) {
-    int thid = blockIdx.x * blockDim.x + threadIdx.x;
+    int thid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
     int local_thid = threadIdx.x;
     int offset = 1;
-    int intsPerBlock = blockDim.x << 1;
+    int intsPerBlock = BLOCK_SIZE << 1;
     int intPosInArray = thid << 1;
     int intPosInBlock = local_thid << 1;
 
     temp[intPosInBlock] = intPosInArray < len ? d_Input[intPosInArray] : 0;
     temp[intPosInBlock + 1] = intPosInArray + 1 < len ? d_Input[intPosInArray + 1] : 0;
 
-    for (int d = blockDim.x; d > 0; d >>= 1) { // build sum in place up the tree
+    for (int d = BLOCK_SIZE; d > 0; d >>= 1) { // build sum in place up the tree
         __syncthreads();
         if (local_thid < d) {
             int ai = offset * (intPosInBlock + 1) - 1;
@@ -106,10 +107,10 @@ __global__ void prescan(int *d_Output, int *d_Input, int len, int *d_SumOutput) 
 }
 
 __global__ void prescanNoConflict(int *d_Output, int *d_Input, int len, int *d_SumOutput) {
-    int thid = blockIdx.x * blockDim.x + threadIdx.x;
+    int thid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
     int local_thid = threadIdx.x;
     int offset = 1;
-    int intsPerBlock = blockDim.x << 1;
+    int intsPerBlock = BLOCK_SIZE << 1;
     int intPosInArray = thid << 1;
     int intPosInBlock = local_thid << 1;
 
@@ -121,7 +122,7 @@ __global__ void prescanNoConflict(int *d_Output, int *d_Input, int len, int *d_S
     temp[g_ai + bankOffsetA] = intPosInArray < len ? d_Input[intPosInArray] : 0;
     temp[g_bi + bankOffsetB] = intPosInArray + 1 < len ? d_Input[intPosInArray + 1] : 0;
 
-    for (int d = blockDim.x; d > 0; d >>= 1) { // build sum in place up the tree
+    for (int d = BLOCK_SIZE; d > 0; d >>= 1) { // build sum in place up the tree
         __syncthreads();
         if (local_thid < d) {
             int ai = offset * (intPosInBlock + 1) - 1;
