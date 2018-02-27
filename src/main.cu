@@ -46,7 +46,7 @@
 #define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) \
     (((n) >> LOG_NUM_BANKS) + ((n) >> (2 * LOG_NUM_BANKS)))
-#define NO_CONFLICT false
+#define NO_CONFLICT true
 #define BLOCK_SIZE 128
 
 void refScan(int *h_output, int *h_input, const int len) {
